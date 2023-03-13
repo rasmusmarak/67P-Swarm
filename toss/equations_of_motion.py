@@ -67,14 +67,16 @@ def compute_motion(t: float, x: np.ndarray, args) -> np.ndarray:
             mesh:
                 vertices (np.ndarray): Array containing all points on mesh.
                 faces (np.ndarray): Array containing all triangles on the mesh.
-
+            state: Parameters provided by the state vector
+                time_of_maneuver (float): Time for adding impulsive maneuver [seconds].
+                delta_v (np.ndarray): Array containing the cartesian componants of the impulsive maneuver.
     Returns:
         (np.ndarray): K vector used for computing state at the following time step.
     """
     rotated_position = rotate_point(t, x[0:3], args)
     a = compute_acceleration(rotated_position, args)
 
-    kx = x[3:6]  
+    kx = x[3:6]
     kv = a
 
     return np.concatenate((kx, kv))

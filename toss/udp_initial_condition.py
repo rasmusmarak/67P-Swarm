@@ -8,9 +8,6 @@ import trajectory_tools
 # For computing the next state
 import equations_of_motion
 
-# For orbit representation (reference frame)
-import pykep as pk
-
 # Class representing UDP 
 class udp_initial_condition:
     """ 
@@ -40,12 +37,13 @@ class udp_initial_condition:
                     rtol (float): Relative error tolerance for integration.
                     atol (float): Absolute error tolerance for integration.
                 problem: Parameters related to the problem:
-                    start_time (float): Start time (in seconds) for the integration of trajectory.
-                    final_time (float): Final time (in seconds) for the integration of trajectory.
+                    start_time (int): Start time (in seconds) for the integration of trajectory.
+                    final_time (int): Final time (in seconds) for the integration of trajectory.
                     initial_time_step (float): Size of initial time step (in seconds) for integration of trajectory.
                     target_squared_altitude (float): Squared value of the satellite's orbital target altitude.
                     radius_bounding_sphere (float): Radius of the bounding sphere representing risk zone for collisions with celestial body.
-                    event (int): Event configuration (0 = no event, 1 = collision with body detection) 
+                    event (int): Event configuration (0 = no event, 1 = collision with body detection).
+                    number_of_maneuvers (int): Number of possible maneuvers.
                 mesh:
                     vertices (np.ndarray): Array containing all points on mesh.
                     faces (np.ndarray): Array containing all triangles on the mesh.
@@ -89,17 +87,14 @@ class udp_initial_condition:
         """ fitness evaluates the proximity of the satallite to target altitude.
 
         Args:
-            x (np.ndarray): State vector containing values for position and velocity of satelite in 3D cartesian coordinates. 
+            x (np.ndarray): State vector. 
 
         Returns:
             fitness value (_float_): Difference between squared values of current and target altitude of satellite.
         """
-        # Convert osculating orbital elements to cartesian for integration
-        r, v = pk.par2ic(E=x, mu=self.args.body.mu)
-        x_cartesian = np.array(r+v)
 
         # Integrate trajectory
-        _, squared_altitudes, collision_detected = trajectory_tools.compute_trajectory(x_cartesian, self.args, equations_of_motion.compute_motion)
+        _, squared_altitudes, collision_detected = trajectory_tools.compute_trajectory(x, self.args, equations_of_motion.compute_motion)
 
         # Define fitness penalty in the event of at least one collision along the trajectory
         if collision_detected == True:

@@ -14,6 +14,7 @@ from toss import trajectory_tools
 from dotmap import DotMap
 from math import pi
 import numpy as np
+import pykep as pk
 
 def test_integration():
 
@@ -40,12 +41,14 @@ def test_integration():
     args.problem.initial_time_step = 600            # Initial time step size for integration [s]
     args.problem.radius_bounding_sphere = 4000      # Radius of spherical risk-zone for collision with celestial body [m]
     args.problem.event = 1                          # Event configuration (0 = no event, 1 = collision with body detection)
+    args.problem.number_of_maneuvers = 0 
 
     args.mesh.body, args.mesh.vertices, args.mesh.faces, args.mesh.largest_body_protuberant = mesh_utility.create_mesh()
 
 
     # Initial position for integration (in cartesian coordinates):
-    x_cartesian = [-1.36986549e+03, -4.53113817e+03, -8.41816487e+03, -1.23505256e-01, -1.59791505e-01, 2.21471017e-01]
+    x = [-1.36986549e+03, -4.53113817e+03, -8.41816487e+03, -1.23505256e-01, -1.59791505e-01, 2.21471017e-01, 0, 0, 0, 0]
+    x_cartesian = pk.ic2par(r=x[0:3], v=x[3:6], mu=args.body.mu)
 
     # Compute trajectory via numerical integration as in UDP.
     trajectory_info, _, _  = trajectory_tools.compute_trajectory(x_cartesian, args, equations_of_motion.compute_motion)

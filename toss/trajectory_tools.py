@@ -4,7 +4,10 @@ from typing import Union, Callable
 
 # For Plotting
 import pyvista as pv
- 
+
+# For orbit representation (reference frame)
+import pykep as pk
+
 # For working with the mesh
 from toss.mesh_utility import is_outside
 
@@ -17,12 +20,11 @@ import desolver.backend as D
 D.set_float_fmt('float64')
 
 
-
 def compute_trajectory(x: np.ndarray, args, func: Callable) -> Union[np.ndarray, float, bool]:
     """compute_trajectory computes trajectory of satellite using numerical integation techniques 
 
     Args:
-        x (np.ndarray): State vector containing values for position and velocity of satelite in 3D cartesian coordinates.
+        x (np.ndarray): State vector.
         args (dotmap.DotMap):
             body: Parameters related to the celestial body:
                 density (float): Mass density of celestial body.
@@ -37,11 +39,18 @@ def compute_trajectory(x: np.ndarray, args, func: Callable) -> Union[np.ndarray,
                 rtol (float): Relative error tolerance for integration.
                 atol (float): Absolute error tolerance for integration.
             problem: Parameters related to the problem:
-                start_time (float): Start time (in seconds) for the integration of trajectory.
-                final_time (float): Final time (in seconds) for the integration of trajectory.
+                start_time (int): Start time (in seconds) for the integration of trajectory.
+                final_time (int): Final time (in seconds) for the integration of trajectory.
                 initial_time_step (float): Size of initial time step (in seconds) for integration of trajectory.
                 radius_bounding_sphere (float): Radius of the bounding sphere representing risk zone for collisions with celestial body.
-                event (int): Event configuration (0 = no event, 1 = collision with body detection)
+                event (int): Event configuration (0 = no event, 1 = collision with body detection).
+                number_of_maneuvers (int): Number of possible maneuvers.
+            mesh:
+                vertices (np.ndarray): Array containing all points on mesh.
+                faces (np.ndarray): Array containing all triangles on the mesh.
+            state: Parameters provided by the state vector
+                time_of_maneuver (float): Time for adding impulsive maneuver [seconds].
+                delta_v (np.ndarray): Array containing the cartesian componants of the impulsive maneuver.
         func (Callable): A function handle for the state update equation required for integration.
 
     Returns:
@@ -49,20 +58,56 @@ def compute_trajectory(x: np.ndarray, args, func: Callable) -> Union[np.ndarray,
         squared_altitudes (float): Sum of squared altitudes above origin for every position
         collision_penalty (bool): Penalty value given for the event of a collision with the celestial body.
     """
-    
-    # Compute trajectory by numerical integration
-    trajectory, trajectory_info = integrate(func, x, args)
+    # Convert osculating orbital elements to cartesian for integration
+    r, v = pk.par2ic(E=x[0:6], mu=args.body.mu)
+    x_cartesian = np.array(r+v)
+
+    # Setup time intervals with/without maneuvers
+    if args.problem.number_of_maneuvers == 0:
+        time_list = [args.problem.start_time, args.problem.final_time]
+    else:
+        # Add state variables related to the impulsive maneuver in args
+        args.state.time_of_maneuver = int(x[6])
+        args.state.delta_v = np.array([x[7], x[8], x[9]])
+        time_list = [args.problem.start_time, args.state.time_of_maneuver, args.problem.final_time]
+
+    # Integrate trajectory for each subinterval
+    trajectory_info = 0
+    for i in range(0, len(time_list)-1):
+        args.integrator.t0 = time_list[i]
+        args.integrator.tf = time_list[i+1]
+
+        if i > 0:
+            # Start at end position of previous interval, now adding impulsive manuever
+            x_cartesian = trajectory_info[0:6,-1]
+            x_cartesian[3:6] += args.state.delta_v
+
+        # Compute trajectory by numerical integration
+        trajectory, trajectory_memory = integrate_trajectory(func, x_cartesian, args)
+
+        if i == 0:
+            trajectory_info = trajectory_memory
+
+        else:
+            trajectory_info = np.hstack((trajectory_info[:,0:-1] ,trajectory_memory))
+        
+        # Check for potential collisions
+        event_triggers = np.empty((len(trajectory.events), 3), dtype=np.float64)
+        k = 0
+        for event in trajectory.events:
+            event_triggers[k,:] = event.y[0:3]
+            k += 1
+
+        if i == 0: 
+            points_inside_risk_zone = event_triggers
+        else:
+            points_inside_risk_zone = np.vstack((points_inside_risk_zone, event_triggers))
+
 
     # Compute average distance to target altitude
     squared_altitudes = trajectory_info[0,:]**2 + trajectory_info[1,:]**2 + trajectory_info[2,:]**2
-
-    # Check for potential collisions
-    points_inside_risk_zone = np.empty((len(trajectory.events), 3), dtype=np.float64)
-    i = 0
-    for j in trajectory.events:
-        points_inside_risk_zone[i,:] = j.y[0:3]
-        i += 1
     
+    # Check for collisions
     collisions_avoided = point_is_outside_mesh(points_inside_risk_zone, args.mesh.vertices, args.mesh.faces)
     if all(collisions_avoided) == True:
         collision_detected = False
@@ -73,13 +118,13 @@ def compute_trajectory(x: np.ndarray, args, func: Callable) -> Union[np.ndarray,
     return trajectory_info, squared_altitudes, collision_detected
 
 
-def integrate(func: Callable, x: np.ndarray, args):
+def integrate_trajectory(func: Callable, x: np.ndarray, args):
 
     """ Integrates trajectory numerically using DeSolver library.
 
     Args:
         func (Callable): A function handle for the equ_rhs (state update equation) required for integration.
-        x (np.ndarray): State vector containing values for position and velocity of satelite in 3D cartesian coordinates.
+        x (np.ndarray): Initial position and velocity of satelite in 3D cartesian coordinates.
         args (dotmap.DotMap):
             body:
                 density (float): Mass density of celestial body.
@@ -89,14 +134,17 @@ def integrate(func: Callable, x: np.ndarray, args):
                 rtol (float): Relative error tolerance for integration.
                 atol (float): Absolute error tolerance for integration.
             problem: Parameters related to the problem:
-                start_time (float): Start time (in seconds) for the integration of trajectory.
-                final_time (float): Final time (in seconds) for the integration of trajectory.
+                start_time (int): Start time (in seconds) for the integration of trajectory.
+                final_time (int): Final time (in seconds) for the integration of trajectory.
                 initial_time_step (float): Size of initial time step (in seconds) for integration of trajectory.
                 radius_bounding_sphere (float): Radius of the bounding sphere representing risk zone for collisions with celestial body.
                 event (int): Event configuration (0 = no event, 1 = collision with body detection)
             mesh:
                 vertices (np.ndarray): Array containing all points on mesh.
                 faces (np.ndarray): Array containing all triangles on the mesh.
+            state: Parameters provided by the state vector
+                time_of_maneuver (float): Time for adding impulsive maneuver [seconds].
+                delta_v (np.ndarray): Array containing the cartesian componants of the impulsive maneuver.
     Returns:
         trajectory (desolver.differential_system.OdeSystem): The integration object provided by desolver.
         trajectory_info (np.ndarray): Numpy array containing information on position and velocity at every time step (columnwise).
@@ -104,8 +152,8 @@ def integrate(func: Callable, x: np.ndarray, args):
 
     # Setup parameters
     dense_output = args.integrator.dense_output
-    t0 = args.problem.start_time
-    tf = args.problem.final_time
+    t0 = args.integrator.t0
+    tf = args.integrator.tf
     dt = args.problem.initial_time_step
     rtol = args.integrator.rtol
     atol = args.integrator.atol
@@ -138,7 +186,7 @@ def integrate(func: Callable, x: np.ndarray, args):
     return trajectory, trajectory_info
 
 
-def point_is_inside_risk_zone(t: float, state: np.ndarray, args: float) -> int:
+def point_is_inside_risk_zone(t: float, state: np.ndarray, args) -> int:
     """ Checks for event: collision with the celestial body.
 
     Args:
